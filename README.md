@@ -1,5 +1,9 @@
 # CS2Votes
 
+<img width="1915" height="1063" alt="image" src="https://github.com/user-attachments/assets/8be1a891-2eb8-4497-8064-007fd333564f" />
+
+` These maps are in vote file.`
+
 A map vote plugin for Counter-Strike 2 servers that play Steam Workshop maps.
 It is a [CounterStrikeSharp](https://github.com/roflmuffin/CounterStrikeSharp) plugin. It was made for Prop Hunt server: 78.61.47.144:27015.
 
