@@ -14,7 +14,7 @@ namespace CS2Votes;
 public sealed partial class CS2Votes : BasePlugin, IPluginConfig<PluginConfig>
 {
     public override string ModuleName => "CS2Votes";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.1.0";
     public override string ModuleAuthor => "OrangStudio";
     public override string ModuleDescription => "Workshop map voting RTV";
     public PluginConfig Config { get; set; } = new();
@@ -291,12 +291,16 @@ public sealed partial class CS2Votes : BasePlugin, IPluginConfig<PluginConfig>
 
     private void ChangeMapNow(MapEntry map)
     {
-        Server.ExecuteCommand($"host_workshop_map {map.Id}");
+        // Stock maps are Valve levels. Workshop maps still load by file id.
+        if (map.Stock)
+            Server.ExecuteCommand($"changelevel {map.MapName}");
+        else
+            Server.ExecuteCommand($"host_workshop_map {map.Id}");
 
         // if map does not load
         _changeTimer = AddTimer(45f, () =>
         {
-            Logger.LogError("host_workshop_map {Id} did not change the map in 45s.", map.Id);
+            Logger.LogError("Map {Name} ({MapName}) did not load in 45s.", map.Name, map.MapName);
             _changing = false;
             _state.PendingId = 0;
             SaveState();

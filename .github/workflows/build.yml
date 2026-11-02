@@ -1,0 +1,125 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+  MENU_MANAGER_TAG: v1.0.42
+  MENU_MANAGER_ASSET: CS2MenuManager-v42.zip
+
+jobs:
+  build:
+    name: Publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish
+        run: dotnet publish src/CS2Votes.csproj -c Release -o .publish
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          root=package/addons/counterstrikesharp
+          plugin="$root/plugins/CS2Votes"
+          mkdir -p "$plugin/lang"
+          cp -f .publish/CS2Votes.dll "$plugin/"
+          if [ -d .publish/lang ]; then
+            cp -f .publish/lang/*.json "$plugin/lang/"
+          fi
+
+          curl -fL --retry 3 -o /tmp/menu-manager.zip \
+            "https://github.com/schwarper/CS2MenuManager/releases/download/${MENU_MANAGER_TAG}/${MENU_MANAGER_ASSET}"
+          rm -rf /tmp/menu-manager
+          unzip -q /tmp/menu-manager.zip -d /tmp/menu-manager
+          mkdir -p "$root/shared" "$root/plugins"
+          cp -a /tmp/menu-manager/shared/CS2MenuManager "$root/shared/"
+          cp -a /tmp/menu-manager/plugins/CS2MenuManager_MenuManager "$root/plugins/"
+
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            name="cs2votes-${GITHUB_REF_NAME}-linux"
+          else
+            name="cs2votes-${GITHUB_SHA::7}-linux"
+          fi
+          tar -czf "${name}.tar.gz" -C package addons
+          echo "Packed ${name}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs2votes-linux
+          path: cs2votes-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [build]
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cs2votes-linux
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ env.RELEASE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          NOTES=$(printf '%s\n' \
+            'PlayCup CS2Votes.' \
+            '' \
+            'Extract the archive into `game/csgo/`.' \
+            'Stock maps (`"Stock": true`) load with changelevel. Workshop maps load with host_workshop_map.' \
+            'When fewer humans are online than Rtv.MinPlayers, !rtv and !votemap change the map without a vote.' \
+            'The archive also includes CS2MenuManager, which !votemap needs.')
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            TAG="$GITHUB_REF_NAME"
+            VERSION="${TAG#v}"
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release $TAG already exists"
+            else
+              gh release create "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "CS2Votes v${VERSION}" \
+                --notes "$NOTES" \
+                --verify-tag
+            fi
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+          else
+            TAG=latest
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release edit "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --target "$GITHUB_SHA" \
+                --prerelease \
+                --title "CS2Votes latest"
+            else
+              gh release create "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --target "$GITHUB_SHA" \
+                --prerelease \
+                --title "CS2Votes latest" \
+                --notes "$NOTES"
+            fi
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+          fi

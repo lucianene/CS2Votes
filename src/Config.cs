@@ -10,6 +10,8 @@ public sealed class MapEntry
     [JsonPropertyName("Name")] public string Name { get; set; } = "";
     /// <summary>Name the engine reports after the map loads, e.g. de_dust2</summary>
     [JsonPropertyName("MapName")] public string MapName { get; set; } = "";
+    /// <summary>Load with changelevel instead of host_workshop_map. For Valve maps that are not workshop items.</summary>
+    [JsonPropertyName("Stock")] public bool Stock { get; set; }
 }
 
 public sealed class EndMatchVoteConfig

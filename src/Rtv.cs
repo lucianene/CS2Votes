@@ -46,7 +46,10 @@ public sealed partial class CS2Votes
         var humans = Humans().Count;
         if (humans < Config.Rtv.MinPlayers)
         {
-            Reply(player, "rtv.min_players", Config.Rtv.MinPlayers);
+            // Too few people for a vote. Whoever is here changes the map now.
+            _rtvPassed = true;
+            Broadcast("rtv.passed_now");
+            EndMatch(true);
             return;
         }
 

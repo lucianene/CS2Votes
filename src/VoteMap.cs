@@ -27,15 +27,16 @@ public sealed partial class CS2Votes
             return;
         }
 
+        var few = Humans().Count < Config.Rtv.MinPlayers;
         var cooldown = (int)Math.Ceiling((_voteMapCooldownUntil - DateTime.UtcNow).TotalSeconds);
-        if (cooldown > 0)
+        if (!few && cooldown > 0)
         {
             Reply(player, "votemap.cooldown", cooldown);
             return;
         }
 
         var wait = Config.VoteMap.AllowAfterSeconds - SecondsSinceMapStart;
-        if (wait > 0)
+        if (!few && wait > 0)
         {
             Reply(player, "votemap.wait", wait);
             return;
@@ -89,6 +90,13 @@ public sealed partial class CS2Votes
 
     private void StartVoteMap(CCSPlayerController caller, MapEntry map)
     {
+        if (Humans().Count < Config.Rtv.MinPlayers)
+        {
+            Broadcast("votemap.passed", map.Name, 1, 0);
+            BroadcastCenter("center.nextmap", map.Name);
+            ScheduleMapChange(map, Config.VoteMap.ChangeDelaySeconds, "votemap, few players");
+            return;
+        }
         _voteMapCooldownUntil = DateTime.UtcNow.AddSeconds(Config.VoteMap.CooldownSeconds);
         var details = Lang.Strip(_lang.Get(Config.DefaultLanguage, "votemap.panel", map.Name));
         var vote = new PanoramaVote("#SFUI_vote_panorama_vote_default", details,

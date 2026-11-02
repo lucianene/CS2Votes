@@ -13,8 +13,11 @@ It is a [CounterStrikeSharp](https://github.com/roflmuffin/CounterStrikeSharp) p
 - **`!votemap [map]`**: a native F1 (yes) / F2 (no) vote to change to one map now.
   Without a map name, it opens WASD menu with all maps.
 - **WASD menu** with a countdown. Its shown higher than the normal center text so the game mode HUD does not cover it.
-- Workshop maps always load by ID with `host_workshop_map <id>`. 
-- Languages: English and Lithuanian (`src/lang/*.json`).
+- Workshop maps load by ID with `host_workshop_map <id>`. Maps marked `"Stock": true` load with `changelevel`.
+- When fewer humans are online than `Rtv.MinPlayers`, `!rtv` and `!votemap` change the map without waiting for a vote.
+- Languages: English, Lithuanian, and Romanian (`src/lang/*.json`).
+
+PlayCup installs the GitHub release (`cs2votes-*-linux.tar.gz`) with `make cs2addon-cs2-votes-refresh`. That archive also contains CS2MenuManager. A push to `main` updates the rolling `latest` prerelease. A `vX.Y.Z` tag publishes a versioned release. Map changes still go through `changelevel` or `host_workshop_map`, so CS2StatsSharp can post `map_changing` / `map_changed` to the PlayCup API.
 
 ## Requirements
 
