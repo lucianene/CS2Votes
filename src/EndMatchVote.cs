@@ -43,6 +43,10 @@ public sealed partial class CS2Votes
         if (_changing)
             return HookResult.Continue;
 
+        // Gamemode cfg can turn the engine panel back on after map start.
+        // Set it again here so only one vote UI is on screen.
+        ApplyServerSettings();
+
         if (_nextMap != null)
         {
             Broadcast("endmatch.nextmap_set", _nextMap.Name);
@@ -86,17 +90,29 @@ public sealed partial class CS2Votes
     {
         _voteOptions = options;
         _voteActive = true;
-        _nativeVote = UseNativeUi && FillNativeOptions(options);
-
         var seconds = Config.EndMatchVote.VoteSeconds;
+        _nativeVote = UseNativeUi && FillNativeOptions(options);
+        if (UseNativeUi && !_nativeVote)
+        {
+            // Options could not be written into the engine panel. Turn that
+            // panel off so it cannot cover the center menu and eat the clicks.
+            SetConVar("mp_endmatch_votenextmap", "0");
+            Logger.LogWarning("Native vote options could not be applied. Using the center menu only.");
+        }
+
         if (_nativeVote)
         {
-            // engine shows panel after the scoreboard; its own selecting map event, normally ends the vote.
-            _voteDeadline = DateTime.UtcNow.AddSeconds(seconds + 12);
+            CloseAllHudMenus();
+            SetConVar("mp_endmatch_votenextmap", "1");
+            SetConVar("mp_endmatch_votenextleveltime", seconds.ToString());
+            // The panel lasts VoteSeconds. This fallback only waits out the
+            // scoreboard that plays first; the selecting event ends the vote.
+            _voteDeadline = DateTime.UtcNow.AddSeconds(seconds + 20);
             Broadcast("endmatch.started_native", seconds);
         }
         else
         {
+            SetConVar("mp_endmatch_votenextmap", "0");
             _voteDeadline = DateTime.UtcNow.AddSeconds(seconds);
             foreach (var player in Humans())
                 ShowEndMatchMenu(player);
@@ -185,6 +201,24 @@ public sealed partial class CS2Votes
         OpenHudMenu(player, menu);
     }
 
+    /// <summary>
+    /// Engine winner is a panel slot, or sometimes the mapgroup index.
+    /// Returns an index into <see cref="_voteOptions"/>, or -1.
+    /// </summary>
+    private int NormalizeEngineWinner(int raw)
+    {
+        if (raw < 0 || _voteOptions.Count == 0)
+            return -1;
+        if (raw < _voteOptions.Count)
+            return raw;
+        for (var i = 0; i < _voteOptions.Count; i++)
+        {
+            if (MapGroupIndex(_voteOptions[i]) == raw)
+                return i;
+        }
+        return -1;
+    }
+
     // slot (0-based) the player voted for, or -1
     private int VoteSlotOf(CCSPlayerController player)
     {
@@ -264,25 +298,24 @@ public sealed partial class CS2Votes
                 counts[slot]++;
         }
         var total = counts.Sum();
-        var top = counts.Max();
-        var tied = Enumerable.Range(0, counts.Length).Where(i => counts[i] == top).ToList();
+        var engineWinner = NormalizeEngineWinner(GameRules?.EndMatchMapVoteWinner ?? -1);
         int winner;
-        if (tied.Count == 1)
+        // Panorama already chose. Player fields often stay -1 until this event,
+        // so a click on the panel must win over an empty center-menu tally.
+        if (_nativeVote && _selectingSeen && engineWinner >= 0)
         {
-            winner = tied[0];
+            winner = engineWinner;
+        }
+        else if (_nativeVote && _selectingSeen && engineWinner < 0 && attempt < 12)
+        {
+            AddTimer(0.5f, () => FinishEndMatchVote(attempt + 1), TimerFlags.STOP_ON_MAPCHANGE);
+            return;
         }
         else
         {
-            // engine plays its roulette and shows winner
-            var engineWinner = GameRules?.EndMatchMapVoteWinner ?? -1;
-            if (_nativeVote && _selectingSeen && engineWinner < 0 && attempt < 12)
-            {
-                AddTimer(0.5f, () => FinishEndMatchVote(attempt + 1), TimerFlags.STOP_ON_MAPCHANGE);
-                return;
-            }
-            winner = _nativeVote && _selectingSeen && tied.Contains(engineWinner)
-                ? engineWinner
-                : tied[Random.Shared.Next(tied.Count)];
+            var top = counts.Max();
+            var tied = Enumerable.Range(0, counts.Length).Where(i => counts[i] == top).ToList();
+            winner = tied.Count == 1 ? tied[0] : tied[Random.Shared.Next(tied.Count)];
         }
 
         _voteActive = false;
@@ -293,12 +326,15 @@ public sealed partial class CS2Votes
         Logger.LogInformation("Vote result: {Result}; engine winner {Engine}; chosen {Map}",
             string.Join(", ", _voteOptions.Select((m, i) => $"{m.Name}={counts[i]}")),
             GameRules?.EndMatchMapVoteWinner, map.Name);
-        if (total == 0)
+        var chosenVotes = winner >= 0 && winner < counts.Length ? counts[winner] : 0;
+        if (_nativeVote && _selectingSeen)
+            Broadcast("endmatch.nextmap_set", map.Name);
+        else if (total == 0)
             Broadcast("endmatch.no_votes", map.Name);
-        else if (tied.Count > 1)
-            Broadcast("endmatch.tie", map.Name, top);
+        else if (counts.Count(c => c == counts.Max()) > 1)
+            Broadcast("endmatch.tie", map.Name, chosenVotes);
         else
-            Broadcast("endmatch.result", map.Name, top, total);
+            Broadcast("endmatch.result", map.Name, chosenVotes, total);
         BroadcastCenter("center.nextmap", map.Name);
         ScheduleMapChange(map, Config.EndMatchVote.ChangeDelaySeconds, "end-of-match vote");
     }

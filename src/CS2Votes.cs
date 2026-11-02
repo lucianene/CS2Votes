@@ -14,7 +14,7 @@ namespace CS2Votes;
 public sealed partial class CS2Votes : BasePlugin, IPluginConfig<PluginConfig>
 {
     public override string ModuleName => "CS2Votes";
-    public override string ModuleVersion => "1.1.0";
+    public override string ModuleVersion => "1.1.1";
     public override string ModuleAuthor => "OrangStudio";
     public override string ModuleDescription => "Workshop map voting RTV";
     public PluginConfig Config { get; set; } = new();
@@ -164,7 +164,7 @@ public sealed partial class CS2Votes : BasePlugin, IPluginConfig<PluginConfig>
         SetConVar("mp_endmatch_votenextmap", engineVote ? "1" : "0");
         SetConVar("mp_endmatch_votenextmap_keepcurrent", "0");
         SetConVar("mp_endmatch_votenextleveltime", vote.VoteSeconds.ToString());
-        SetConVar("mp_match_restart_delay", (vote.VoteSeconds + vote.ChangeDelaySeconds + 25).ToString());
+        SetConVar("mp_match_restart_delay", (vote.VoteSeconds + vote.ChangeDelaySeconds + 12).ToString());
         SetConVar("mp_match_end_changelevel", "0");
         SetConVar("mp_match_end_restart", "0");
     }
