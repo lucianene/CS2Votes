@@ -110,6 +110,7 @@ public sealed partial class CS2Votes : BasePlugin, IPluginConfig<PluginConfig>
         _mapStartedAt = DateTime.UtcNow;
         ResetRtv();
         ResetEndMatchVote();
+        CancelEmptyHome();
         _voteMapCooldownUntil = DateTime.MinValue;
         _gameRules = null;
 
@@ -291,6 +292,9 @@ public sealed partial class CS2Votes : BasePlugin, IPluginConfig<PluginConfig>
 
     private void ChangeMapNow(MapEntry map)
     {
+        // The mapgroup's next entry must not win the race. After Redline that entry is Deadlock.
+        SetConVar("mp_match_end_changelevel", "0");
+        SetConVar("mp_endmatch_votenextmap", "0");
         // Stock maps are Valve levels. Workshop maps still load by file id.
         if (map.Stock)
             Server.ExecuteCommand($"changelevel {map.MapName}");
@@ -411,6 +415,7 @@ public sealed partial class CS2Votes : BasePlugin, IPluginConfig<PluginConfig>
         if (!IsHuman(player))
             return HookResult.Continue;
 
+        CancelEmptyHome();
         AddTimer(10f, () =>
         {
             if (player is { IsValid: true } && !_changing)
@@ -432,6 +437,7 @@ public sealed partial class CS2Votes : BasePlugin, IPluginConfig<PluginConfig>
             // one human less can be enough for rest
             Server.NextFrame(CheckRtvThreshold);
         }
+        Server.NextFrame(WatchEmptyServer);
         return HookResult.Continue;
     }
 

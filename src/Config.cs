@@ -81,6 +81,7 @@ public sealed class PluginConfig : BasePluginConfig
     ];
     /// <summary>write game/csgo/gamemodes_server.txt from "Maps" (only for our own mapgroup, "MapGroupMaps" empty). A change needs server restart</summary>
     [JsonPropertyName("ManageGamemodesFile")] public bool ManageGamemodesFile { get; set; } = false;
+    /// <summary>Vote pool. The first entry is the map an empty server stays on.</summary>
     [JsonPropertyName("Maps")]
     public List<MapEntry> Maps { get; set; } =
     [

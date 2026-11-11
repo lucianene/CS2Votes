@@ -17,6 +17,10 @@ public sealed partial class CS2Votes
     private readonly Dictionary<ulong, int> _menuVotes = [];
     private readonly Dictionary<ulong, int> _seenNativeVotes = [];
     private CounterStrikeSharp.API.Modules.Timers.Timer? _votePollTimer;
+    private CounterStrikeSharp.API.Modules.Timers.Timer? _emptyHomeTimer;
+
+    // First Maps entry. Aim lists aim_redline, casual lists de_dust2.
+    private MapEntry HomeMap => Config.Maps[0];
 
     private void ResetEndMatchVote()
     {
@@ -47,6 +51,13 @@ public sealed partial class CS2Votes
         // Set it again here so only one vote UI is on screen.
         ApplyServerSettings();
 
+        // Nobody online: stay on the first map. Do not roll the mapgroup.
+        if (Humans().Count == 0)
+        {
+            HoldEmptyServer();
+            return HookResult.Continue;
+        }
+
         if (_nextMap != null)
         {
             Broadcast("endmatch.nextmap_set", _nextMap.Name);
@@ -54,9 +65,9 @@ public sealed partial class CS2Votes
             return HookResult.Continue;
         }
         var options = BuildVoteOptions();
-        if (!Config.EndMatchVote.Enabled || options.Count == 1)
+        if (!Config.EndMatchVote.Enabled || options.Count <= 1)
         {
-            var map = options[Random.Shared.Next(options.Count)];
+            var map = Config.EndMatchVote.Enabled && options.Count == 1 ? options[0] : HomeMap;
             Broadcast("endmatch.nextmap_set", map.Name);
             ScheduleMapChange(map, Config.EndMatchVote.ChangeDelaySeconds + 4, "rotation (vote disabled)");
             return HookResult.Continue;
@@ -202,38 +213,54 @@ public sealed partial class CS2Votes
     }
 
     /// <summary>
-    /// Engine winner is a panel slot, or sometimes the mapgroup index.
-    /// Returns an index into <see cref="_voteOptions"/>, or -1.
+    /// Panel slot to the map the client showed. The cell in EndMatchMapGroupVoteOptions
+    /// is the mapgroup index. A value that is not a live slot is itself a mapgroup index.
     /// </summary>
-    private int NormalizeEngineWinner(int raw)
+    private MapEntry? MapFromPanelSlot(int raw)
     {
-        if (raw < 0 || _voteOptions.Count == 0)
-            return -1;
-        if (raw < _voteOptions.Count)
-            return raw;
-        for (var i = 0; i < _voteOptions.Count; i++)
+        if (raw < 0)
+            return null;
+        var rules = GameRules;
+        if (rules != null && raw < rules.EndMatchMapGroupVoteOptions.Length)
         {
-            if (MapGroupIndex(_voteOptions[i]) == raw)
-                return i;
+            var fromSlot = MapByGroupIndex(rules.EndMatchMapGroupVoteOptions[raw]);
+            if (fromSlot != null)
+                return fromSlot;
         }
-        return -1;
+        return MapByGroupIndex(raw);
     }
 
-    // slot (0-based) the player voted for, or -1
+    private MapEntry? MapByGroupIndex(int groupIndex)
+    {
+        if (groupIndex < 0)
+            return null;
+        return Config.Maps.FirstOrDefault(m => MapGroupIndex(m) == groupIndex);
+    }
+
+    // Index into _voteOptions, or -1. Native clicks are resolved through the live panel.
     private int VoteSlotOf(CCSPlayerController player)
     {
-        int slot;
         if (_nativeVote)
-            slot = player.EndMatchNextMapVote;
-        else if (!_menuVotes.TryGetValue(player.SteamID, out slot))
-            slot = -1;
+        {
+            var map = MapFromPanelSlot(player.EndMatchNextMapVote);
+            return map == null ? -1 : _voteOptions.IndexOf(map);
+        }
+        if (!_menuVotes.TryGetValue(player.SteamID, out var slot))
+            return -1;
         return slot >= 0 && slot < _voteOptions.Count ? slot : -1;
+    }
+
+    private bool PlayerHasVoted(CCSPlayerController player)
+    {
+        if (_nativeVote)
+            return MapFromPanelSlot(player.EndMatchNextMapVote) != null;
+        return VoteSlotOf(player) >= 0;
     }
 
     private bool AllHumansVoted()
     {
         var humans = Humans();
-        return humans.Count > 0 && humans.All(p => VoteSlotOf(p) >= 0);
+        return humans.Count > 0 && humans.All(PlayerHasVoted);
     }
 
     private void PollEndMatchVote()
@@ -250,11 +277,12 @@ public sealed partial class CS2Votes
             // tell chat who voted for what, like good old RTV plugins did!
             foreach (var player in Humans())
             {
-                var slot = VoteSlotOf(player);
-                if (slot < 0 || (_seenNativeVotes.TryGetValue(player.SteamID, out var old) && old == slot))
+                var slot = player.EndMatchNextMapVote;
+                var map = MapFromPanelSlot(slot);
+                if (map == null || (_seenNativeVotes.TryGetValue(player.SteamID, out var old) && old == slot))
                     continue;
                 _seenNativeVotes[player.SteamID] = slot;
-                Broadcast("endmatch.player_voted", player.PlayerName, _voteOptions[slot].Name);
+                Broadcast("endmatch.player_voted", player.PlayerName, map.Name);
             }
         }
 
@@ -298,44 +326,119 @@ public sealed partial class CS2Votes
                 counts[slot]++;
         }
         var total = counts.Sum();
-        var engineWinner = NormalizeEngineWinner(GameRules?.EndMatchMapVoteWinner ?? -1);
-        int winner;
-        // Panorama already chose. Player fields often stay -1 until this event,
-        // so a click on the panel must win over an empty center-menu tally.
-        if (_nativeVote && _selectingSeen && engineWinner >= 0)
+        MapEntry? chosen = null;
+        var fromEngine = false;
+        // The winner field is a slot into the live option array, not into our filtered list.
+        // A click on Redline must stay Redline when that list has already dropped it.
+        if (_nativeVote && _selectingSeen)
         {
-            winner = engineWinner;
+            chosen = MapFromPanelSlot(GameRules?.EndMatchMapVoteWinner ?? -1);
+            if (chosen == null && attempt < 12)
+            {
+                AddTimer(0.5f, () => FinishEndMatchVote(attempt + 1), TimerFlags.STOP_ON_MAPCHANGE);
+                return;
+            }
+            fromEngine = chosen != null;
         }
-        else if (_nativeVote && _selectingSeen && engineWinner < 0 && attempt < 12)
+
+        var tied = false;
+        var chosenVotes = 0;
+        if (chosen == null)
         {
-            AddTimer(0.5f, () => FinishEndMatchVote(attempt + 1), TimerFlags.STOP_ON_MAPCHANGE);
-            return;
+            if (total == 0 || counts.Length == 0)
+            {
+                chosen = HomeMap;
+            }
+            else
+            {
+                var top = counts.Max();
+                var winners = Enumerable.Range(0, counts.Length)
+                    .Where(i => counts[i] == top)
+                    .OrderBy(i => Config.Maps.IndexOf(_voteOptions[i]))
+                    .ToList();
+                tied = winners.Count > 1;
+                chosen = _voteOptions[winners[0]];
+                chosenVotes = counts[winners[0]];
+            }
         }
         else
         {
-            var top = counts.Max();
-            var tied = Enumerable.Range(0, counts.Length).Where(i => counts[i] == top).ToList();
-            winner = tied.Count == 1 ? tied[0] : tied[Random.Shared.Next(tied.Count)];
+            var index = _voteOptions.IndexOf(chosen);
+            if (index >= 0)
+            {
+                chosenVotes = counts[index];
+                tied = chosenVotes > 0 && counts.Count(c => c == chosenVotes) > 1;
+            }
         }
 
         _voteActive = false;
         _votePollTimer?.Kill();
         _votePollTimer = null;
         CloseAllHudMenus();
-        var map = _voteOptions[winner];
-        Logger.LogInformation("Vote result: {Result}; engine winner {Engine}; chosen {Map}",
+
+        var raw = GameRules?.EndMatchMapVoteWinner ?? -1;
+        var cell = -1;
+        if (GameRules != null && raw >= 0 && raw < GameRules.EndMatchMapGroupVoteOptions.Length)
+            cell = GameRules.EndMatchMapGroupVoteOptions[raw];
+        Logger.LogInformation("Vote result: {Result}; engine winner {Engine} option {Cell}; chosen {Map}",
             string.Join(", ", _voteOptions.Select((m, i) => $"{m.Name}={counts[i]}")),
-            GameRules?.EndMatchMapVoteWinner, map.Name);
-        var chosenVotes = winner >= 0 && winner < counts.Length ? counts[winner] : 0;
-        if (_nativeVote && _selectingSeen)
-            Broadcast("endmatch.nextmap_set", map.Name);
+            raw, cell, chosen.Name);
+
+        if (Humans().Count == 0)
+        {
+            HoldEmptyServer();
+            return;
+        }
+
+        if (fromEngine)
+            Broadcast("endmatch.nextmap_set", chosen.Name);
         else if (total == 0)
-            Broadcast("endmatch.no_votes", map.Name);
-        else if (counts.Count(c => c == counts.Max()) > 1)
-            Broadcast("endmatch.tie", map.Name, chosenVotes);
+            Broadcast("endmatch.no_votes", chosen.Name);
+        else if (tied)
+            Broadcast("endmatch.tie", chosen.Name, chosenVotes);
         else
-            Broadcast("endmatch.result", map.Name, chosenVotes, total);
-        BroadcastCenter("center.nextmap", map.Name);
-        ScheduleMapChange(map, Config.EndMatchVote.ChangeDelaySeconds, "end-of-match vote");
+            Broadcast("endmatch.result", chosen.Name, chosenVotes, total);
+        BroadcastCenter("center.nextmap", chosen.Name);
+        ScheduleMapChange(chosen, Config.EndMatchVote.ChangeDelaySeconds, "end-of-match vote");
+    }
+
+    // Empty server stays on the first map. A different map is loaded once, then held.
+    private void HoldEmptyServer()
+    {
+        CancelEmptyHome();
+        var home = HomeMap;
+        SetConVar("mp_match_end_changelevel", "0");
+        SetConVar("mp_endmatch_votenextmap", "0");
+        if (_currentMap?.Id == home.Id)
+        {
+            Logger.LogInformation("No players online. Staying on {Map}.", home.Name);
+            Server.ExecuteCommand("mp_restartgame 1");
+            return;
+        }
+        Logger.LogInformation("No players online. Next map is {Map}.", home.Name);
+        ScheduleMapChange(home, Config.EndMatchVote.ChangeDelaySeconds, "empty server");
+    }
+
+    private void WatchEmptyServer()
+    {
+        if (Humans().Count > 0 || Config.Maps.Count == 0 || _changing || _emptyHomeTimer != null || _voteActive)
+            return;
+        if (_currentMap?.Id == HomeMap.Id)
+            return;
+        _emptyHomeTimer = AddTimer(5f, () =>
+        {
+            _emptyHomeTimer = null;
+            if (Humans().Count > 0 || _changing || _voteActive || _intermissionHandled)
+                return;
+            if (_currentMap?.Id == HomeMap.Id)
+                return;
+            ScheduleMapChange(HomeMap, 0.1f, "server empty");
+        }, TimerFlags.STOP_ON_MAPCHANGE);
+    }
+
+    private void CancelEmptyHome()
+    {
+        _emptyHomeTimer?.Kill();
+        _emptyHomeTimer = null;
     }
 }
